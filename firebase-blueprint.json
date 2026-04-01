@@ -1,0 +1,98 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application (Student, Admin, or Recruiter)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The user's unique ID" },
+        "email": { "type": "string", "format": "email", "description": "The user's email address" },
+        "displayName": { "type": "string", "description": "The user's full name" },
+        "photoURL": { "type": "string", "format": "uri", "description": "The user's profile picture URL" },
+        "role": { "type": "string", "enum": ["student", "admin", "recruiter"], "description": "The user's role" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the user was created" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "A company that posts jobs",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The company's name" },
+        "description": { "type": "string", "description": "A description of the company" },
+        "website": { "type": "string", "format": "uri", "description": "The company's website" },
+        "logoUrl": { "type": "string", "format": "uri", "description": "The company's logo URL" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the company was created" }
+      },
+      "required": ["name", "createdAt"]
+    },
+    "Job": {
+      "title": "Job",
+      "description": "A job posting",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "description": "The ID of the company" },
+        "title": { "type": "string", "description": "The job title" },
+        "description": { "type": "string", "description": "The job description" },
+        "requirements": { "type": "array", "items": { "type": "string" }, "description": "Job requirements" },
+        "location": { "type": "string", "description": "The job location" },
+        "type": { "type": "string", "enum": ["full-time", "part-time", "internship"], "description": "The job type" },
+        "status": { "type": "string", "enum": ["open", "closed"], "description": "The job status" },
+        "recruiterId": { "type": "string", "description": "The ID of the recruiter who posted the job" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the job was created" }
+      },
+      "required": ["companyId", "title", "description", "status", "recruiterId", "createdAt"]
+    },
+    "Application": {
+      "title": "Application",
+      "description": "A student's application to a job",
+      "type": "object",
+      "properties": {
+        "jobId": { "type": "string", "description": "The ID of the job" },
+        "studentId": { "type": "string", "description": "The ID of the student" },
+        "status": { "type": "string", "enum": ["pending", "reviewing", "interviewing", "accepted", "rejected"], "description": "The application status" },
+        "appliedAt": { "type": "string", "format": "date-time", "description": "When the application was submitted" },
+        "resumeUrl": { "type": "string", "format": "uri", "description": "The student's resume URL" }
+      },
+      "required": ["jobId", "studentId", "status", "appliedAt"]
+    },
+    "Interview": {
+      "title": "Interview",
+      "description": "An interview scheduled for an application",
+      "type": "object",
+      "properties": {
+        "applicationId": { "type": "string", "description": "The ID of the application" },
+        "studentId": { "type": "string", "description": "The ID of the student" },
+        "recruiterId": { "type": "string", "description": "The ID of the recruiter" },
+        "jobId": { "type": "string", "description": "The ID of the job" },
+        "scheduledAt": { "type": "string", "format": "date-time", "description": "When the interview is scheduled" },
+        "status": { "type": "string", "enum": ["scheduled", "completed", "cancelled"], "description": "The interview status" },
+        "meetingLink": { "type": "string", "format": "uri", "description": "The meeting link" }
+      },
+      "required": ["applicationId", "studentId", "recruiterId", "jobId", "scheduledAt", "status"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Stores user profiles and roles"
+    },
+    "companies/{companyId}": {
+      "schema": "Company",
+      "description": "Stores company profiles"
+    },
+    "jobs/{jobId}": {
+      "schema": "Job",
+      "description": "Stores job postings"
+    },
+    "applications/{applicationId}": {
+      "schema": "Application",
+      "description": "Stores student applications"
+    },
+    "interviews/{interviewId}": {
+      "schema": "Interview",
+      "description": "Stores scheduled interviews"
+    }
+  }
+}

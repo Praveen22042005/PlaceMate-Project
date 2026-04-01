@@ -1,0 +1,5 @@
+{
+  "name": "PlaceMate Demo",
+  "description": "Interactive front-end MVP for PlaceMate, a role-based digital framework for automating campus placement management.",
+  "requestFramePermissions": []
+}
