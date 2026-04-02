@@ -3,6 +3,7 @@ import DashboardLayout from '../../components/DashboardLayout';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useState } from 'react';
+import { toast } from 'react-hot-toast';
 
 const navItems = [
   { name: 'Dashboard', href: '/admin', icon: LayoutDashboard },
@@ -80,11 +81,11 @@ export default function AdminReports() {
         downloadCSV(students, 'overall_placement_report');
       } else {
         // Placeholder for other reports
-        alert(`Report generation for "${title}" is not fully implemented yet.`);
+        toast.error(`Report generation for "${title}" is not fully implemented yet.`);
       }
     } catch (error) {
       console.error('Error generating report:', error);
-      alert('Failed to generate report.');
+      toast.error('Failed to generate report.');
     } finally {
       setGenerating(null);
     }

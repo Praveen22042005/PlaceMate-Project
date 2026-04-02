@@ -1,5 +1,7 @@
 import React, { ReactNode } from 'react';
+import AIChatAssistant from './AIChatAssistant';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import NotificationBell from './NotificationBell';
 import { motion } from 'framer-motion';
 import { 
   GraduationCap, 
@@ -104,15 +106,12 @@ export default function DashboardLayout({ children, role, navItems }: DashboardL
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top header */}
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 lg:px-8 shrink-0">
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 lg:px-8 shrink-0 relative z-10">
           <h1 className="text-xl font-semibold text-slate-900">
             {navItems.find(i => i.href === location.pathname)?.name || 'Dashboard'}
           </h1>
           <div className="flex items-center gap-4">
-            <button className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-full transition-colors relative">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-            </button>
+            <NotificationBell />
           </div>
         </header>
 
@@ -128,6 +127,9 @@ export default function DashboardLayout({ children, role, navItems }: DashboardL
           </motion.div>
         </div>
       </main>
+
+      {/* AI Chat Assistant — Student only */}
+      {role === 'Student' && <AIChatAssistant />}
     </div>
   );
 }

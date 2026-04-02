@@ -2,8 +2,11 @@ import { Briefcase, Users, Clock, Plus, Filter, Search, MoreVertical, ArrowUpRig
 import DashboardLayout from '../components/DashboardLayout';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, where, getDoc, doc, getDocs } from 'firebase/firestore';
+import { collection, query, onSnapshot, where, getDoc, doc, getDocs, documentId } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { useAuth } from '../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
+import { CardSkeleton, TableSkeleton } from '../components/Skeletons';
 
 const navItems = [
   { name: 'Dashboard', href: '/recruiter', icon: Briefcase },
@@ -13,6 +16,8 @@ const navItems = [
 ];
 
 export default function RecruiterDashboard() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [activeJobs, setActiveJobs] = useState<any[]>([]);
   const [upcomingInterviews, setUpcomingInterviews] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,53 +37,54 @@ export default function RecruiterDashboard() {
   });
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    if (!user) return;
 
-    const recruiterId = auth.currentUser.uid;
+    const recruiterId = user.uid;
 
     // Fetch Jobs
     const jobsQuery = query(collection(db, 'jobs'), where('recruiterId', '==', recruiterId));
     const unsubscribeJobs = onSnapshot(jobsQuery, async (snapshot) => {
       const allApplications: any[] = [];
-      const jobsPromises = snapshot.docs.map(async (document) => {
-        const jobData = document.data();
-        let applicantsCount = 0;
-        let newApplicantsCount = 0;
+      const jobIds = snapshot.docs.map(d => d.id);
+      
+      if (jobIds.length > 0) {
+        const jobChunks = [];
+        for (let i = 0; i < jobIds.length; i += 10) {
+          jobChunks.push(jobIds.slice(i, i + 10));
+        }
 
         try {
-          const appsQuery = query(collection(db, 'applications'), where('jobId', '==', document.id));
-          const appsSnapshot = await getDocs(appsQuery);
-          applicantsCount = appsSnapshot.size;
-          
-          appsSnapshot.docs.forEach(doc => {
-            allApplications.push(doc.data());
-          });
-          
-          // Mock new applicants for now, or calculate based on appliedAt date
-          // Let's say new applicants are those applied in the last 7 days
-          const sevenDaysAgo = new Date();
-          sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-          
-          newApplicantsCount = appsSnapshot.docs.filter(doc => {
-            const appliedAt = new Date(doc.data().appliedAt);
-            return appliedAt > sevenDaysAgo;
-          }).length;
-
-        } catch (error) {
-          console.error("Error fetching applicants count:", error);
+          await Promise.all(jobChunks.map(async chunk => {
+            const appsQuery = query(collection(db, 'applications'), where('jobId', 'in', chunk));
+            const appsSnapshot = await getDocs(appsQuery);
+            appsSnapshot.forEach(doc => allApplications.push(doc.data()));
+          }));
+        } catch (e) {
+          console.error("Error fetching applications for jobs:", e);
         }
+      }
+
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+      const resolvedJobs = snapshot.docs.map(document => {
+        const jobData = document.data();
+        const jobApps = allApplications.filter(a => a.jobId === document.id);
+        const newApplicantsCount = jobApps.filter(app => {
+          const appliedAt = new Date(app.appliedAt);
+          return appliedAt > sevenDaysAgo;
+        }).length;
 
         return {
           id: document.id,
           ...jobData,
-          applicants: applicantsCount,
+          applicants: jobApps.length,
           new: newApplicantsCount,
           status: jobData.status || 'Active',
           deadline: jobData.deadline ? new Date(jobData.deadline).toLocaleDateString() : 'N/A'
         };
       });
 
-      const resolvedJobs = await Promise.all(jobsPromises);
       setActiveJobs(resolvedJobs);
       
       // Calculate applicantData for the chart (last 7 days)
@@ -105,7 +111,7 @@ export default function RecruiterDashboard() {
       // Update stats
       setStats(prev => ({
         ...prev,
-        activeJobs: resolvedJobs.filter(j => j.status === 'Active' || j.status === 'open').length,
+        activeJobs: resolvedJobs.filter(j => j.status === 'Active').length,
         totalApplicants: resolvedJobs.reduce((sum, job) => sum + job.applicants, 0)
       }));
     });
@@ -114,31 +120,46 @@ export default function RecruiterDashboard() {
     const interviewsQuery = query(collection(db, 'interviews'), where('recruiterId', '==', recruiterId));
     const unsubscribeInterviews = onSnapshot(interviewsQuery, async (snapshot) => {
       try {
-        const interviewsData = await Promise.all(snapshot.docs.map(async (interviewDoc) => {
+        const studentIds = Array.from(new Set(snapshot.docs.map(d => d.data().studentId).filter(Boolean))) as string[];
+        const jobIds = Array.from(new Set(snapshot.docs.map(d => d.data().jobId).filter(Boolean))) as string[];
+        
+        const studentsMap = new Map();
+        const jobsMap = new Map();
+
+        const fetchChunks = async (ids: string[], collectionName: string, mapToPopulate: Map<string, any>) => {
+          if (ids.length === 0) return;
+          const chunks = [];
+          for (let i = 0; i < ids.length; i += 10) {
+            chunks.push(ids.slice(i, i + 10));
+          }
+          await Promise.all(chunks.map(async chunk => {
+            const q = query(collection(db, collectionName), where(documentId(), 'in', chunk));
+            const qs = await getDocs(q);
+            qs.forEach(doc => mapToPopulate.set(doc.id, doc.data()));
+          }));
+        };
+
+        try {
+          await Promise.all([
+            fetchChunks(studentIds, 'users', studentsMap),
+            fetchChunks(jobIds, 'jobs', jobsMap)
+          ]);
+        } catch (e) {
+          console.error("Error batch fetching related data:", e);
+        }
+
+        const interviewsData = snapshot.docs.map(interviewDoc => {
           const data = interviewDoc.data();
           let candidateName = 'Unknown Candidate';
           let roleTitle = 'Unknown Role';
 
-          if (data.studentId) {
-            try {
-              const studentDoc = await getDoc(doc(db, 'users', data.studentId));
-              if (studentDoc.exists()) {
-                candidateName = studentDoc.data().name || candidateName;
-              }
-            } catch (e) {
-              console.error("Error fetching student:", e);
-            }
+          if (data.studentId && studentsMap.has(data.studentId)) {
+            const sData = studentsMap.get(data.studentId);
+            candidateName = sData.name || sData.displayName || candidateName;
           }
 
-          if (data.jobId) {
-            try {
-              const jobDoc = await getDoc(doc(db, 'jobs', data.jobId));
-              if (jobDoc.exists()) {
-                roleTitle = jobDoc.data().title || roleTitle;
-              }
-            } catch (e) {
-              console.error("Error fetching job:", e);
-            }
+          if (data.jobId && jobsMap.has(data.jobId)) {
+            roleTitle = jobsMap.get(data.jobId).title || roleTitle;
           }
 
           return {
@@ -150,14 +171,14 @@ export default function RecruiterDashboard() {
             type: data.round || data.type || 'Interview',
             status: data.status || 'Scheduled'
           };
-        }));
+        });
 
-        const upcoming = interviewsData.filter(i => i.status === 'Scheduled' || i.status === 'Confirmed');
+        const upcoming = interviewsData.filter(i => i.status === 'Scheduled');
         setUpcomingInterviews(upcoming);
         
         // Update stats
         const today = new Date().toLocaleDateString();
-        const todayInterviews = interviewsData.filter(i => new Date(i.scheduledAt).toLocaleDateString() === today);
+        const todayInterviews = interviewsData.filter((i: any) => new Date(i.scheduledAt).toLocaleDateString() === today);
         setStats(prev => ({
           ...prev,
           interviewsToday: todayInterviews.length
@@ -179,10 +200,18 @@ export default function RecruiterDashboard() {
     <DashboardLayout role="Recruiter" navItems={navItems}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Welcome back!</h2>
-          <p className="text-slate-500 text-sm mt-1">Here's what's happening with your job postings today.</p>
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Welcome back!</h2>
+            <span className="px-2.5 py-1 bg-amber-100 text-amber-700 text-xs font-bold rounded-md border border-amber-200 uppercase tracking-wider">
+              Role: Recruiter
+            </span>
+          </div>
+          <p className="text-slate-500 text-sm mt-1">Here is your recruitment pipeline overview for this week.</p>
         </div>
-        <button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm">
+        <button 
+          onClick={() => navigate('/recruiter/jobs?action=post')}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm"
+        >
           <Plus className="w-4 h-4" />
           Post New Job
         </button>
@@ -244,7 +273,7 @@ export default function RecruiterDashboard() {
           </div>
           <div className="p-6 space-y-6 flex-1 overflow-y-auto custom-scrollbar h-[300px]">
             {loading ? (
-              <div className="text-center text-slate-500 py-4">Loading interviews...</div>
+              <CardSkeleton count={2} />
             ) : upcomingInterviews.length === 0 ? (
               <div className="text-center text-slate-500 py-4">No upcoming interviews.</div>
             ) : (
@@ -282,7 +311,7 @@ export default function RecruiterDashboard() {
         </div>
         <div className="overflow-x-auto">
           {loading ? (
-            <div className="p-8 text-center text-slate-500">Loading jobs...</div>
+            <TableSkeleton columns={5} rows={3} />
           ) : activeJobs.length === 0 ? (
             <div className="p-8 text-center text-slate-500">No active jobs found.</div>
           ) : (

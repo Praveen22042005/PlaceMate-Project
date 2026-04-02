@@ -1,8 +1,11 @@
 import { Building, Briefcase, FileBarChart, Search, Filter, Plus, MoreVertical, MapPin, Globe, Mail, Phone, Users, Star, TrendingUp } from 'lucide-react';
 import DashboardLayout from '../../components/DashboardLayout';
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
+import AddCompanyModal from '../../components/admin/AddCompanyModal';
+import FilterPanel, { ActiveFilters, FilterGroup } from '../../components/FilterPanel';
+import { TableSkeleton } from '../../components/Skeletons';
 
 const navItems = [
   { name: 'Dashboard', href: '/admin', icon: TrendingUp },
@@ -21,35 +24,50 @@ const getTierColor = (tier: string) => {
   }
 };
 
+import { useFirestoreCollection } from '../../hooks/useFirestore';
+
 export default function AdminCompanies() {
-  const [companies, setCompanies] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [activeFilters, setActiveFilters] = useState<ActiveFilters>({ tier: [], status: [] });
   const itemsPerPage = 10;
+  
+  const { data: companies, loading } = useFirestoreCollection('companies');
 
-  useEffect(() => {
-    const q = query(collection(db, 'companies'));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const companiesData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setCompanies(companiesData);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching companies:', error);
-      setLoading(false);
-    });
+  // Build filter groups with live counts
+  const filterGroups: FilterGroup[] = [
+    {
+      id: 'tier',
+      label: 'Tier',
+      type: 'select',
+      options: [
+        { value: 'Tier 1', label: 'Tier 1', count: companies.filter(c => c.tier === 'Tier 1').length },
+        { value: 'Tier 2', label: 'Tier 2', count: companies.filter(c => c.tier === 'Tier 2').length },
+        { value: 'Tier 3', label: 'Tier 3', count: companies.filter(c => c.tier === 'Tier 3').length },
+      ].filter(o => o.count > 0),
+    },
+    {
+      id: 'status',
+      label: 'Status',
+      type: 'select',
+      options: [
+        { value: 'Active', label: 'Active', count: companies.filter(c => c.status === 'Active').length },
+        { value: 'Inactive', label: 'Inactive', count: companies.filter(c => c.status === 'Inactive' || !c.status).length },
+      ],
+    },
+  ];
 
-    return () => unsubscribe();
-  }, []);
+  const filteredCompanies = companies.filter(company => {
+    const matchesSearch = !searchTerm ||
+      company.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      company.industry?.toLowerCase().includes(searchTerm.toLowerCase());
 
-  const filteredCompanies = companies.filter(company => 
-    company.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    company.industry?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+    const matchesTier = activeFilters.tier.length === 0 || activeFilters.tier.includes(company.tier);
+    const matchesStatus = activeFilters.status.length === 0 || activeFilters.status.includes(company.status || 'Inactive');
+
+    return matchesSearch && matchesTier && matchesStatus;
+  });
 
   const totalPages = Math.ceil(filteredCompanies.length / itemsPerPage);
   const paginatedCompanies = filteredCompanies.slice(
@@ -62,6 +80,25 @@ export default function AdminCompanies() {
   const tier1Companies = companies.filter(c => c.tier === 'Tier 1').length;
   const totalOffersMade = companies.reduce((acc, c) => acc + (c.totalHired || 0), 0);
 
+  const toggleStatus = async (companyId: string, currentStatus: string) => {
+    try {
+      const newStatus = currentStatus === 'Active' ? 'Inactive' : 'Active';
+      await updateDoc(doc(db, 'companies', companyId), { status: newStatus });
+    } catch (error) {
+      console.error('Error toggling status:', error);
+    }
+  };
+
+  const handleDelete = async (companyId: string) => {
+    if (window.confirm('Are you sure you want to delete this company? This cannot be undone.')) {
+      try {
+        await deleteDoc(doc(db, 'companies', companyId));
+      } catch (error) {
+        console.error('Error deleting company:', error);
+      }
+    }
+  };
+
   return (
     <DashboardLayout role="Admin" navItems={navItems}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
@@ -70,11 +107,17 @@ export default function AdminCompanies() {
           <p className="text-slate-500 text-sm mt-1">Manage recruiting partners, track hiring metrics, and view active jobs.</p>
         </div>
         <div className="flex gap-3">
-          <button className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors shadow-sm">
-            <Filter className="w-4 h-4" />
-            Filter
-          </button>
-          <button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors shadow-sm">
+          <FilterPanel
+            groups={filterGroups}
+            activeFilters={activeFilters}
+            onFilterChange={(f) => { setActiveFilters(f); setCurrentPage(1); }}
+            resultCount={filteredCompanies.length}
+            totalCount={companies.length}
+          />
+          <button 
+            onClick={() => setIsAddModalOpen(true)}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors shadow-sm"
+          >
             <Plus className="w-4 h-4" />
             Add Company
           </button>
@@ -82,22 +125,42 @@ export default function AdminCompanies() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        {[
-          { label: 'Total Partners', count: totalPartners, color: 'blue' },
-          { label: 'Active Hiring', count: activeHiring, color: 'emerald' },
-          { label: 'Tier 1 Companies', count: tier1Companies, color: 'purple' },
-          { label: 'Total Offers Made', count: totalOffersMade, color: 'amber' },
-        ].map((stat, i) => (
-          <div key={i} className={`bg-${stat.color}-50 border border-${stat.color}-100 rounded-xl p-4 flex items-center justify-between`}>
-            <div>
-              <p className={`text-sm font-medium text-${stat.color}-600 mb-1`}>{stat.label}</p>
-              <h4 className={`text-2xl font-bold text-${stat.color}-900`}>{stat.count}</h4>
-            </div>
-            <div className={`p-3 bg-white rounded-lg shadow-sm text-${stat.color}-500`}>
-              <Building className="w-5 h-5" />
-            </div>
+        <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-blue-600 mb-1">Total Partners</p>
+            <h4 className="text-2xl font-bold text-blue-900">{totalPartners}</h4>
           </div>
-        ))}
+          <div className="p-3 bg-white rounded-lg shadow-sm text-blue-500">
+            <Building className="w-5 h-5" />
+          </div>
+        </div>
+        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-emerald-600 mb-1">Active Hiring</p>
+            <h4 className="text-2xl font-bold text-emerald-900">{activeHiring}</h4>
+          </div>
+          <div className="p-3 bg-white rounded-lg shadow-sm text-emerald-500">
+            <Building className="w-5 h-5" />
+          </div>
+        </div>
+        <div className="bg-purple-50 border border-purple-100 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-purple-600 mb-1">Tier 1 Companies</p>
+            <h4 className="text-2xl font-bold text-purple-900">{tier1Companies}</h4>
+          </div>
+          <div className="p-3 bg-white rounded-lg shadow-sm text-purple-500">
+            <Building className="w-5 h-5" />
+          </div>
+        </div>
+        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-amber-600 mb-1">Total Offers Made</p>
+            <h4 className="text-2xl font-bold text-amber-900">{totalOffersMade}</h4>
+          </div>
+          <div className="p-3 bg-white rounded-lg shadow-sm text-amber-500">
+            <Building className="w-5 h-5" />
+          </div>
+        </div>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -121,6 +184,11 @@ export default function AdminCompanies() {
         </div>
         
         <div className="overflow-x-auto">
+          {loading ? (
+             <TableSkeleton columns={5} rows={5} />
+          ) : paginatedCompanies.length === 0 ? (
+             <div className="p-8 text-center text-slate-500">No companies found.</div>
+          ) : (
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-white border-b border-slate-200">
@@ -132,19 +200,7 @@ export default function AdminCompanies() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                    Loading companies...
-                  </td>
-                </tr>
-              ) : paginatedCompanies.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                    No companies found.
-                  </td>
-                </tr>
-              ) : paginatedCompanies.map((company) => (
+              {paginatedCompanies.map((company) => (
                 <tr key={company.id} className="hover:bg-slate-50/50 transition-colors group">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-4">
@@ -197,15 +253,34 @@ export default function AdminCompanies() {
                       </span>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-right">
-                    <button className="text-slate-400 hover:text-indigo-600 p-2 rounded-lg hover:bg-indigo-50 transition-colors">
-                      <MoreVertical className="w-5 h-5" />
-                    </button>
+                  <td className="px-6 py-4 text-right relative">
+                    <div className="group/menu relative inline-block text-left">
+                      <button className="text-slate-400 hover:text-indigo-600 p-2 rounded-lg hover:bg-indigo-50 transition-colors focus:outline-none">
+                        <MoreVertical className="w-5 h-5" />
+                      </button>
+                      <div className="origin-top-right absolute right-0 mt-2 w-36 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 divide-y divide-gray-100 opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all z-10">
+                        <div className="py-1">
+                          <button
+                            onClick={() => toggleStatus(company.id, company.status)}
+                            className="text-gray-700 block px-4 py-2 text-sm w-full text-left hover:bg-slate-50"
+                          >
+                            Mark {company.status === 'Active' ? 'Inactive' : 'Active'}
+                          </button>
+                          <button
+                            onClick={() => handleDelete(company.id)}
+                            className="text-red-600 block px-4 py-2 text-sm w-full text-left hover:bg-red-50 font-medium"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          )}
         </div>
         
         {totalPages > 1 && (
@@ -242,6 +317,11 @@ export default function AdminCompanies() {
           </div>
         )}
       </div>
+      
+      <AddCompanyModal 
+        isOpen={isAddModalOpen} 
+        onClose={() => setIsAddModalOpen(false)} 
+      />
     </DashboardLayout>
   );
 }

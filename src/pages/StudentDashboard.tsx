@@ -8,23 +8,30 @@ import {
   DollarSign,
   CalendarDays,
   Star,
-  ExternalLink,
-  TrendingUp
+  TrendingUp,
+  Search,
+  ExternalLink
 } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
+import { useNavigate } from 'react-router-dom';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, limit, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { useAuth } from '../contexts/AuthContext';
+import { CardSkeleton } from '../components/Skeletons';
 
 const navItems = [
   { name: 'Dashboard', href: '/student', icon: Briefcase },
+  { name: 'Browse Jobs', href: '/student/jobs', icon: Search },
   { name: 'My Applications', href: '/student/applications', icon: FileText },
   { name: 'Interviews', href: '/student/interviews', icon: Clock },
   { name: 'Profile', href: '/student/profile', icon: CheckCircle },
 ];
 
 export default function StudentDashboard() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [recommendedJobs, setRecommendedJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [studentName, setStudentName] = useState('');
@@ -39,8 +46,8 @@ export default function StudentDashboard() {
   const [studentSkills, setStudentSkills] = useState<string[]>([]);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
-    const studentId = auth.currentUser.uid;
+    if (!user) return;
+    const studentId = user.uid;
 
     // Fetch student profile
     const fetchProfile = async () => {
@@ -101,6 +108,8 @@ export default function StudentDashboard() {
       });
       
       setActivityData(newActivityData);
+    }, (error) => {
+      console.error("Error listening to applications:", error);
     });
 
     // Fetch Interviews
@@ -111,6 +120,8 @@ export default function StudentDashboard() {
         ...prev,
         interviewsScheduled: interviews.filter(i => i.status === 'scheduled' || i.status === 'Confirmed').length
       }));
+    }, (error) => {
+      console.error("Error listening to interviews:", error);
     });
 
     return () => {
@@ -163,10 +174,18 @@ export default function StudentDashboard() {
     <DashboardLayout role="Student" navItems={navItems}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-2">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Welcome back, {studentName}!</h2>
-          <p className="text-slate-500 text-sm">Here is your placement journey overview for this week.</p>
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Welcome back, {studentName}!</h2>
+            <span className="px-2.5 py-1 bg-indigo-100 text-indigo-700 text-xs font-bold rounded-md border border-indigo-200 uppercase tracking-wider">
+              Role: Student
+            </span>
+          </div>
+          <p className="text-slate-500 text-sm mt-1">Here is your placement journey overview for this week.</p>
         </div>
-        <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-2">
+        <button 
+          onClick={() => navigate('/student/jobs')}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-2"
+        >
           <Briefcase className="w-4 h-4" />
           Browse All Jobs
         </button>
@@ -243,14 +262,17 @@ export default function StudentDashboard() {
               <h3 className="text-lg font-bold text-slate-900">Recommended Jobs</h3>
               <p className="text-sm text-slate-500">Based on your skills</p>
             </div>
-            <button className="text-sm text-indigo-600 font-medium hover:text-indigo-700 flex items-center gap-1">
+            <button 
+              onClick={() => navigate('/student/jobs')}
+              className="text-sm text-indigo-600 font-medium hover:text-indigo-700 flex items-center gap-1"
+            >
               View All <ExternalLink className="w-3 h-3" />
             </button>
           </div>
           
           <div className="space-y-4 flex-1 overflow-y-auto pr-2 custom-scrollbar">
             {loading ? (
-              <div className="text-center text-slate-500 py-4">Loading recommendations...</div>
+              <CardSkeleton count={3} />
             ) : recommendedJobs.length === 0 ? (
               <div className="text-center text-slate-500 py-4">No jobs found.</div>
             ) : (

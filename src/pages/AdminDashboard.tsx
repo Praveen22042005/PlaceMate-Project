@@ -2,9 +2,10 @@ import { Users, Building, Briefcase, FileBarChart, TrendingUp, Download, CheckCi
 import DashboardLayout from '../components/DashboardLayout';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, orderBy, limit, getDoc, doc, where } from 'firebase/firestore';
+import { collection, query, onSnapshot, orderBy, limit, doc, where, getDocs, documentId } from 'firebase/firestore';
 import { db } from '../firebase';
 
+// we also need to redefine the start since I'm matching from line 5
 const navItems = [
   { name: 'Dashboard', href: '/admin', icon: TrendingUp },
   { name: 'Students', href: '/admin/students', icon: Users },
@@ -15,13 +16,14 @@ const navItems = [
 
 const getStatusBadge = (status: string) => {
   switch (status) {
-    case 'Selected': return <span className="flex items-center gap-1 bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full text-xs font-bold border border-emerald-200"><CheckCircle className="w-3 h-3" /> Selected</span>;
-    case 'interviewing':
+    case 'Selected':
+    case 'Offered': return <span className="flex items-center gap-1 bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full text-xs font-bold border border-emerald-200"><CheckCircle className="w-3 h-3" /> {status}</span>;
     case 'Interview': return <span className="flex items-center gap-1 bg-amber-50 text-amber-700 px-2.5 py-1 rounded-full text-xs font-bold border border-amber-200"><Clock className="w-3 h-3" /> Interview</span>;
-    case 'Assessment': return <span className="flex items-center gap-1 bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-full text-xs font-bold border border-indigo-200"><FileBarChart className="w-3 h-3" /> Assessment</span>;
-    case 'reviewing':
+    case 'Assessment':
+    case 'Under Review': return <span className="flex items-center gap-1 bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-full text-xs font-bold border border-indigo-200"><FileBarChart className="w-3 h-3" /> {status}</span>;
     case 'Applied': return <span className="flex items-center gap-1 bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full text-xs font-bold border border-blue-200"><FileText className="w-3 h-3" /> Applied</span>;
     case 'Rejected': return <span className="flex items-center gap-1 bg-red-50 text-red-700 px-2.5 py-1 rounded-full text-xs font-bold border border-red-200"><XCircle className="w-3 h-3" /> Rejected</span>;
+    case 'Withdrawn': return <span className="flex items-center gap-1 bg-slate-50 text-slate-700 px-2.5 py-1 rounded-full text-xs font-bold border border-slate-200"><XCircle className="w-3 h-3" /> Withdrawn</span>;
     default: return null;
   }
 };
@@ -37,37 +39,61 @@ export default function AdminDashboard() {
     // Fetch recent applications
     const appsQuery = query(collection(db, 'applications'), orderBy('appliedAt', 'desc'), limit(8));
     const unsubscribeApps = onSnapshot(appsQuery, async (snapshot) => {
-      const appsPromises = snapshot.docs.map(async (document) => {
+      const studentIds = Array.from(new Set(snapshot.docs.map(d => d.data().studentId).filter(Boolean))) as string[];
+      const jobIds = Array.from(new Set(snapshot.docs.map(d => d.data().jobId).filter(Boolean))) as string[];
+      
+      const studentsMap = new Map();
+      const jobsMap = new Map();
+      const companiesMap = new Map();
+
+      const fetchChunks = async (ids: string[], collectionName: string, mapToPopulate: Map<string, any>) => {
+        if (ids.length === 0) return;
+        const chunks = [];
+        for (let i = 0; i < ids.length; i += 10) {
+          chunks.push(ids.slice(i, i + 10));
+        }
+        await Promise.all(chunks.map(async chunk => {
+          const q = query(collection(db, collectionName), where(documentId(), 'in', chunk));
+          const qs = await getDocs(q);
+          qs.forEach(doc => mapToPopulate.set(doc.id, doc.data()));
+        }));
+      };
+
+      try {
+        await Promise.all([
+          fetchChunks(studentIds, 'users', studentsMap),
+          fetchChunks(jobIds, 'jobs', jobsMap)
+        ]);
+
+        // Second pass: fetch companies for the jobs we just fetched
+        const companyIds = Array.from(new Set(Array.from(jobsMap.values()).map(j => j.companyId).filter(Boolean))) as string[];
+        await fetchChunks(companyIds, 'companies', companiesMap);
+
+      } catch (e) {
+        console.error("Error batch fetching related data for applications:", e);
+      }
+
+      const resolvedApps = snapshot.docs.map(document => {
         const appData = document.data();
         let studentName = 'Unknown Student';
         let studentDept = 'Unknown Dept';
         let companyName = 'Unknown Company';
         let jobRole = 'Unknown Role';
 
-        try {
-          if (appData.studentId) {
-            const studentDoc = await getDoc(doc(db, 'users', appData.studentId));
-            if (studentDoc.exists()) {
-              studentName = studentDoc.data().displayName || studentName;
-              studentDept = studentDoc.data().dept || studentDept;
-            }
+        if (appData.studentId && studentsMap.has(appData.studentId)) {
+          const s = studentsMap.get(appData.studentId);
+          studentName = s.displayName || s.name || studentName;
+          studentDept = s.dept || studentDept;
+        }
+
+        if (appData.jobId && jobsMap.has(appData.jobId)) {
+          const j = jobsMap.get(appData.jobId);
+          jobRole = j.title || jobRole;
+          companyName = j.companyName || companyName;
+
+          if (!j.companyName && j.companyId && companiesMap.has(j.companyId)) {
+            companyName = companiesMap.get(j.companyId).name || companyName;
           }
-          if (appData.jobId) {
-            const jobDoc = await getDoc(doc(db, 'jobs', appData.jobId));
-            if (jobDoc.exists()) {
-              jobRole = jobDoc.data().title || jobRole;
-              companyName = jobDoc.data().companyName || companyName;
-              
-              if (!jobDoc.data().companyName && jobDoc.data().companyId) {
-                 const companyDoc = await getDoc(doc(db, 'companies', jobDoc.data().companyId));
-                 if (companyDoc.exists()) {
-                    companyName = companyDoc.data().name || companyName;
-                 }
-              }
-            }
-          }
-        } catch (error) {
-          console.error("Error fetching related data for application:", error);
         }
 
         return {
@@ -81,7 +107,6 @@ export default function AdminDashboard() {
         };
       });
       
-      const resolvedApps = await Promise.all(appsPromises);
       setRecentApplications(resolvedApps);
     });
 
@@ -160,14 +185,19 @@ export default function AdminDashboard() {
   const totalStudents = students.length;
   const placedStudents = statusCounts.Placed;
   const placementRate = totalStudents > 0 ? Math.round((placedStudents / totalStudents) * 100) : 0;
-  const activeJobsCount = jobs.filter(j => j.status === 'Active' || j.status === 'open').length;
+  const activeJobsCount = jobs.filter(j => j.status === 'Active').length;
 
   return (
     <DashboardLayout role="Admin" navItems={navItems}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Placement Overview</h2>
-          <p className="text-slate-500 text-sm mt-1">Monitor campus placement statistics and recent activities.</p>
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Placement Overview</h2>
+            <span className="px-2.5 py-1 bg-red-100 text-red-700 text-xs font-bold rounded-md border border-red-200 uppercase tracking-wider">
+              Role: Admin
+            </span>
+          </div>
+          <p className="text-slate-500 text-sm mt-1">Here is the high-level metrics of the placement season.</p>
         </div>
         <div className="flex items-center gap-3">
           <button className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors shadow-sm">
@@ -178,27 +208,62 @@ export default function AdminDashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        {[
-          { title: 'Total Students', value: totalStudents.toString(), icon: Users, color: 'blue', trend: 'Current Batch' },
-          { title: 'Placed Students', value: placedStudents.toString(), icon: CheckCircle, color: 'emerald', trend: `${placementRate}% Placement Rate` },
-          { title: 'Companies Visited', value: companies.length.toString(), icon: Building, color: 'indigo', trend: 'Active Partners' },
-          { title: 'Active Jobs', value: activeJobsCount.toString(), icon: Briefcase, color: 'amber', trend: 'Currently Open' },
-        ].map((stat, i) => (
-          <div key={i} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group">
-            <div className="flex items-center justify-between mb-4">
-              <div className={`p-3 bg-${stat.color}-50 text-${stat.color}-600 rounded-xl group-hover:scale-110 transition-transform`}>
-                <stat.icon className="w-6 h-6" />
-              </div>
-              <span className={`text-xs font-bold text-${stat.color}-600 bg-${stat.color}-50 px-2.5 py-1 rounded-full`}>
-                {stat.trend}
-              </span>
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group">
+          <div className="flex items-center justify-between mb-4">
+            <div className="p-3 bg-blue-50 text-blue-600 rounded-xl group-hover:scale-110 transition-transform">
+              <Users className="w-6 h-6" />
             </div>
-            <div>
-              <h3 className="text-3xl font-bold text-slate-900 mb-1">{stat.value}</h3>
-              <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">{stat.title}</p>
-            </div>
+            <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">
+              Current Batch
+            </span>
           </div>
-        ))}
+          <div>
+            <h3 className="text-3xl font-bold text-slate-900 mb-1">{totalStudents}</h3>
+            <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">Total Students</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group">
+          <div className="flex items-center justify-between mb-4">
+            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl group-hover:scale-110 transition-transform">
+              <CheckCircle className="w-6 h-6" />
+            </div>
+            <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
+              {placementRate}% Placement Rate
+            </span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-bold text-slate-900 mb-1">{placedStudents}</h3>
+            <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">Placed Students</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group">
+          <div className="flex items-center justify-between mb-4">
+            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl group-hover:scale-110 transition-transform">
+              <Building className="w-6 h-6" />
+            </div>
+            <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full">
+              Active Partners
+            </span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-bold text-slate-900 mb-1">{companies.length}</h3>
+            <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">Companies Visited</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group">
+          <div className="flex items-center justify-between mb-4">
+            <div className="p-3 bg-amber-50 text-amber-600 rounded-xl group-hover:scale-110 transition-transform">
+              <Briefcase className="w-6 h-6" />
+            </div>
+            <span className="text-xs font-bold text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full">
+              Currently Open
+            </span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-bold text-slate-900 mb-1">{activeJobsCount}</h3>
+            <p className="text-sm font-medium text-slate-500 uppercase tracking-wider">Active Jobs</p>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">

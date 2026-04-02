@@ -13,10 +13,6 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isDocOwner() {
-      return isAuthenticated() && request.auth.uid == resource.data.uid;
-    }
-
     function uidUnchanged() {
       return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
     }
@@ -25,15 +21,7 @@ service cloud.firestore {
       return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
     }
 
-    function hasRequiredFields(fields) {
-      return request.resource.data.keys().hasAll(fields);
-    }
 
-    function validStringLength(field, minLen, maxLen) {
-      return request.resource.data[field] is string &&
-        request.resource.data[field].size() >= minLen &&
-        request.resource.data[field].size() <= maxLen;
-    }
 
     function isValidEmail(email) {
       return email is string &&
@@ -70,7 +58,9 @@ service cloud.firestore {
              data.role in ['student', 'admin', 'recruiter'] &&
              data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() < 50 &&
              (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
-             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() < 500));
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() < 500)) &&
+             (!('companyId' in data) || (data.companyId is string && data.companyId.size() < 100)) &&
+             (!('companyName' in data) || (data.companyName is string && data.companyName.size() < 200));
     }
 
     function isValidCompany(data) {
@@ -83,23 +73,30 @@ service cloud.firestore {
     }
 
     function isValidJob(data) {
-      return data.keys().hasAll(['companyId', 'title', 'description', 'status', 'recruiterId', 'createdAt']) &&
+      return data.keys().hasAll(['companyId', 'title', 'status', 'recruiterId', 'createdAt']) &&
              data.companyId is string && data.companyId.size() > 0 && data.companyId.size() < 100 &&
              data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
-             data.description is string && data.description.size() > 0 && data.description.size() < 5000 &&
-             data.status in ['open', 'closed'] &&
+             data.status in ['Active', 'Closed'] &&
              data.recruiterId is string && data.recruiterId.size() > 0 && data.recruiterId.size() < 100 &&
              data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() < 50 &&
+             (!('description' in data) || (data.description is string && data.description.size() < 5000)) &&
              (!('location' in data) || (data.location is string && data.location.size() < 200)) &&
-             (!('type' in data) || (data.type in ['full-time', 'part-time', 'internship'])) &&
-             (!('requirements' in data) || (data.requirements is list && data.requirements.size() < 50));
+             (!('type' in data) || (data.type in ['Full-time', 'Part-time', 'Internship', 'Contract'])) &&
+             (!('requirements' in data) || (data.requirements is list && data.requirements.size() < 50)) &&
+             (!('companyName' in data) || (data.companyName is string && data.companyName.size() < 200)) &&
+             (!('salaryRange' in data) || (data.salaryRange is string && data.salaryRange.size() < 100)) &&
+             (!('deadline' in data) || (data.deadline is string && data.deadline.size() < 50)) &&
+             (!('eligibleBranches' in data) || (data.eligibleBranches is list && data.eligibleBranches.size() < 50)) &&
+             (!('applicants' in data) || (data.applicants is int || data.applicants is number)) &&
+             (!('postedBy' in data) || (data.postedBy is string && data.postedBy.size() < 100)) &&
+             (!('postedByRole' in data) || (data.postedByRole in ['admin', 'recruiter']));
     }
 
     function isValidApplication(data) {
       return data.keys().hasAll(['jobId', 'studentId', 'status', 'appliedAt']) &&
              data.jobId is string && data.jobId.size() > 0 && data.jobId.size() < 100 &&
              data.studentId is string && data.studentId.size() > 0 && data.studentId.size() < 100 &&
-             data.status in ['pending', 'reviewing', 'interviewing', 'accepted', 'rejected'] &&
+             data.status in ['Applied', 'Under Review', 'Assessment', 'Interview', 'Offered', 'Rejected', 'Withdrawn'] &&
              data.appliedAt is string && data.appliedAt.size() > 0 && data.appliedAt.size() < 50 &&
              (!('resumeUrl' in data) || (data.resumeUrl is string && data.resumeUrl.size() < 500));
     }
@@ -111,8 +108,19 @@ service cloud.firestore {
              data.recruiterId is string && data.recruiterId.size() > 0 && data.recruiterId.size() < 100 &&
              data.jobId is string && data.jobId.size() > 0 && data.jobId.size() < 100 &&
              data.scheduledAt is string && data.scheduledAt.size() > 0 && data.scheduledAt.size() < 50 &&
-             data.status in ['scheduled', 'completed', 'cancelled'] &&
+             data.status in ['Scheduled', 'Completed', 'Cancelled'] &&
              (!('meetingLink' in data) || (data.meetingLink is string && data.meetingLink.size() < 500));
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'title', 'message', 'type', 'read', 'createdAt']) &&
+             data.userId is string && data.userId.size() > 0 &&
+             data.title is string && data.title.size() > 0 &&
+             data.message is string && data.message.size() > 0 &&
+             data.type in ['application_status', 'interview_scheduled', 'system', 'general'] &&
+             data.read is bool &&
+             data.createdAt is string && data.createdAt.size() > 0 &&
+             (!('link' in data) || data.link is string);
     }
 
     // ===============================================================
@@ -169,7 +177,7 @@ service cloud.firestore {
       // Students can create applications for themselves.
       allow create: if isStudent() && isValidApplication(request.resource.data) && 
                     request.resource.data.studentId == request.auth.uid &&
-                    request.resource.data.status == 'pending';
+                    request.resource.data.status == 'Applied';
                     
       // Students can update their own applications (e.g., withdraw), recruiters/admins can update status.
       allow update: if isAuthenticated() && isValidApplication(request.resource.data) && 
@@ -177,7 +185,8 @@ service cloud.firestore {
                     request.resource.data.jobId == resource.data.jobId && // JobId is immutable
                     (
                       isAdmin() || isRecruiter() || 
-                      (isStudent() && resource.data.studentId == request.auth.uid && request.resource.data.status == resource.data.status) // Students can't change status
+                      (isStudent() && resource.data.studentId == request.auth.uid && 
+                       (request.resource.data.status == resource.data.status || request.resource.data.status == 'Withdrawn'))
                     );
                     
       allow delete: if isAdmin() || (isStudent() && resource.data.studentId == request.auth.uid);
@@ -200,6 +209,17 @@ service cloud.firestore {
                     request.resource.data.jobId == resource.data.jobId; // JobId is immutable
                     
       allow delete: if isAdmin() || (isRecruiter() && resource.data.recruiterId == request.auth.uid);
+    }
+
+    match /notifications/{notificationId} {
+      // Users can read/delete their own notifications
+      allow read, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      
+      // Anyone authenticated (like recruiters) or admin can create notifications for a user
+      allow create: if isAuthenticated() && isValidNotification(request.resource.data);
+      
+      // Users can update their own notifications (e.g. read: true)
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
     }
   }
 }

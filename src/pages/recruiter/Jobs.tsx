@@ -1,8 +1,12 @@
-import { Briefcase, FileText, Users, Calendar, Search, Filter, MoreHorizontal, Plus, Building, MapPin, DollarSign, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Briefcase, FileText, Users, Calendar, Search, Filter, MoreHorizontal, Plus, Building, MapPin, DollarSign, ChevronLeft, ChevronRight, ArrowUpDown } from 'lucide-react';
 import DashboardLayout from '../../components/DashboardLayout';
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, where, getDocs } from 'firebase/firestore';
+import { collection, query, onSnapshot, where, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { useAuth } from '../../contexts/AuthContext';
+import RecruiterPostJobModal from '../../components/recruiter/RecruiterPostJobModal';
+import FilterPanel, { ActiveFilters, FilterGroup } from '../../components/FilterPanel';
+import { useSearchParams } from 'react-router-dom';
 
 const navItems = [
   { name: 'Dashboard', href: '/recruiter', icon: Briefcase },
@@ -12,16 +16,31 @@ const navItems = [
 ];
 
 export default function RecruiterJobs() {
+  const { user } = useAuth();
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [activeFilters, setActiveFilters] = useState<ActiveFilters>({ status: [], type: [] });
+  const [sortField, setSortField] = useState<'title' | 'date'>('date');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Auto-open modal when navigated with ?action=post (from dashboard button)
+  useEffect(() => {
+    if (searchParams.get('action') === 'post') {
+      setIsAddModalOpen(true);
+      // Clean up the URL so refreshing doesn't re-open
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    if (!user) return;
 
-    const q = query(collection(db, 'jobs'), where('recruiterId', '==', auth.currentUser.uid));
+    const q = query(collection(db, 'jobs'), where('recruiterId', '==', user.uid));
     const unsubscribe = onSnapshot(q, async (snapshot) => {
       const jobsPromises = snapshot.docs.map(async (document) => {
         const jobData = document.data();
@@ -40,7 +59,6 @@ export default function RecruiterJobs() {
           ...jobData,
           date: new Date(jobData.createdAt || Date.now()).toLocaleDateString(),
           status: jobData.status || 'Active',
-          statusColor: jobData.status === 'Closed' ? 'slate' : 'emerald',
           applicants: applicantsCount
         };
       });
@@ -56,10 +74,65 @@ export default function RecruiterJobs() {
     return () => unsubscribe();
   }, []);
 
-  const filteredJobs = jobs.filter(job => 
-    job.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    job.department?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Build filter groups
+  const filterGroups: FilterGroup[] = [
+    {
+      id: 'status',
+      label: 'Status',
+      type: 'select',
+      options: [
+        { value: 'Active', label: 'Active', count: jobs.filter(j => j.status === 'Active').length },
+        { value: 'Closed', label: 'Closed', count: jobs.filter(j => j.status === 'Closed').length },
+      ],
+    },
+    {
+      id: 'type',
+      label: 'Job Type',
+      options: [
+        { value: 'Full-time', label: 'Full-time', count: jobs.filter(j => j.type === 'Full-time').length },
+        { value: 'Part-time', label: 'Part-time', count: jobs.filter(j => j.type === 'Part-time').length },
+        { value: 'Internship', label: 'Internship', count: jobs.filter(j => j.type === 'Internship').length },
+        { value: 'Contract', label: 'Contract', count: jobs.filter(j => j.type === 'Contract').length },
+      ].filter(o => o.count > 0),
+    },
+  ];
+
+  const filteredJobs = jobs
+    .filter(job => {
+      const matchesSearch = !searchTerm ||
+        job.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        job.department?.toLowerCase().includes(searchTerm.toLowerCase());
+
+      const matchesStatus = activeFilters.status.length === 0 || activeFilters.status.includes(job.status);
+      const matchesType = activeFilters.type.length === 0 || activeFilters.type.includes(job.type);
+
+      return matchesSearch && matchesStatus && matchesType;
+    })
+    .sort((a, b) => {
+      let cmp = 0;
+      if (sortField === 'title') cmp = (a.title || '').localeCompare(b.title || '');
+      else if (sortField === 'date') cmp = (a.createdAt || '').localeCompare(b.createdAt || '');
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+
+  const toggleStatus = async (jobId: string, currentStatus: string) => {
+    try {
+      const newStatus = currentStatus === 'Active' ? 'Closed' : 'Active';
+      await updateDoc(doc(db, 'jobs', jobId), { status: newStatus });
+    } catch (error) {
+      console.error('Error toggling status:', error);
+    }
+  };
+
+  const handleDelete = async (jobId: string) => {
+    if (window.confirm('Are you sure you want to delete this job? This cannot be undone.')) {
+      try {
+        await deleteDoc(doc(db, 'jobs', jobId));
+      } catch (error) {
+        console.error('Error deleting job:', error);
+      }
+    }
+  };
 
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
@@ -80,7 +153,10 @@ export default function RecruiterJobs() {
           <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Job Postings</h2>
           <p className="text-slate-500 text-sm">Manage your active and closed job postings.</p>
         </div>
-        <button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm">
+        <button 
+          onClick={() => setIsAddModalOpen(true)}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm"
+        >
           <Plus className="w-5 h-5" />
           Post New Job
         </button>
@@ -99,9 +175,13 @@ export default function RecruiterJobs() {
                 className="pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none w-full sm:w-64"
               />
             </div>
-            <button className="p-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors">
-              <Filter className="w-4 h-4" />
-            </button>
+            <FilterPanel
+              groups={filterGroups}
+              activeFilters={activeFilters}
+              onFilterChange={(f) => { setActiveFilters(f); setCurrentPage(1); }}
+              resultCount={filteredJobs.length}
+              totalCount={jobs.length}
+            />
           </div>
           <div className="flex items-center gap-2 text-sm text-slate-500 font-medium">
             <span>Showing {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, filteredJobs.length)} of {filteredJobs.length} jobs</span>
@@ -111,9 +191,17 @@ export default function RecruiterJobs() {
           <table className="w-full text-left text-sm text-slate-600">
             <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
               <tr>
-                <th className="px-6 py-4">Job Title</th>
+                <th className="px-6 py-4">
+                  <button onClick={() => { setSortField('title'); setSortDir(d => sortField === 'title' ? (d === 'asc' ? 'desc' : 'asc') : 'asc'); }} className="flex items-center gap-1 hover:text-indigo-600 transition-colors">
+                    Job Title <ArrowUpDown className="w-3 h-3" />
+                  </button>
+                </th>
                 <th className="px-6 py-4">Department</th>
-                <th className="px-6 py-4">Posted Date</th>
+                <th className="px-6 py-4">
+                  <button onClick={() => { setSortField('date'); setSortDir(d => sortField === 'date' ? (d === 'asc' ? 'desc' : 'asc') : 'desc'); }} className="flex items-center gap-1 hover:text-indigo-600 transition-colors">
+                    Posted Date <ArrowUpDown className="w-3 h-3" />
+                  </button>
+                </th>
                 <th className="px-6 py-4">Applicants</th>
                 <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4 text-right">Action</th>
@@ -141,14 +229,32 @@ export default function RecruiterJobs() {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-${row.statusColor}-100 text-${row.statusColor}-800`}>
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${row.status === 'Active' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-800'}`}>
                         {row.status}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-right">
-                      <button className="text-slate-400 hover:text-indigo-600 transition-colors">
-                        <MoreHorizontal className="w-5 h-5" />
-                      </button>
+                    <td className="px-6 py-4 text-right relative">
+                      <div className="group/menu relative inline-block text-left">
+                        <button className="text-slate-400 hover:text-indigo-600 p-1.5 rounded-lg hover:bg-indigo-50 transition-colors focus:outline-none">
+                          <MoreHorizontal className="w-5 h-5" />
+                        </button>
+                        <div className="origin-top-right absolute right-0 mt-2 w-36 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 divide-y divide-gray-100 opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all z-10">
+                          <div className="py-1">
+                            <button
+                              onClick={() => toggleStatus(row.id, row.status)}
+                              className="text-gray-700 block px-4 py-2 text-sm w-full text-left hover:bg-slate-50"
+                            >
+                              Mark {row.status === 'Active' ? 'Closed' : 'Active'}
+                            </button>
+                            <button
+                              onClick={() => handleDelete(row.id)}
+                              className="text-red-600 block px-4 py-2 text-sm w-full text-left hover:bg-red-50 font-medium"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -193,6 +299,11 @@ export default function RecruiterJobs() {
           </div>
         )}
       </div>
+
+      <RecruiterPostJobModal 
+        isOpen={isAddModalOpen} 
+        onClose={() => setIsAddModalOpen(false)} 
+      />
     </DashboardLayout>
   );
 }

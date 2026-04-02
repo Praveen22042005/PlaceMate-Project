@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User as FirebaseUser, onAuthStateChanged, signInWithPopup } from 'firebase/auth';
+import { User as FirebaseUser, onAuthStateChanged, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 
@@ -11,6 +11,8 @@ export interface UserProfile {
   displayName?: string;
   photoURL?: string;
   role: UserRole;
+  companyId?: string;
+  companyName?: string;
   createdAt: string;
 }
 
@@ -19,6 +21,8 @@ interface AuthContextType {
   profile: UserProfile | null;
   loading: boolean;
   signInWithGoogle: (role?: UserRole) => Promise<void>;
+  signUpWithEmailPassword: (email: string, password: string, name: string, role: UserRole) => Promise<void>;
+  loginWithEmailPassword: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -81,6 +85,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const signUpWithEmailPassword = async (email: string, password: string, name: string, role: UserRole) => {
+    try {
+      const result = await createUserWithEmailAndPassword(auth, email, password);
+      const firebaseUser = result.user;
+      const userDocRef = doc(db, 'users', firebaseUser.uid);
+      
+      const newProfile: UserProfile = {
+        uid: firebaseUser.uid,
+        email: firebaseUser.email || email,
+        displayName: name,
+        role: role,
+        createdAt: new Date().toISOString(),
+      };
+      
+      await setDoc(userDocRef, newProfile);
+      setProfile(newProfile);
+    } catch (error) {
+      console.error('Error signing up', error);
+      throw error;
+    }
+  };
+
+  const loginWithEmailPassword = async (email: string, password: string) => {
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      // Profile fetching is automatically handled by the onAuthStateChanged listener
+    } catch (error) {
+      console.error('Error logging in', error);
+      throw error;
+    }
+  };
+
   const logout = async () => {
     try {
       await auth.signOut();
@@ -91,7 +127,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signInWithGoogle, logout }}>
+    <AuthContext.Provider value={{ 
+      user, profile, loading, 
+      signInWithGoogle, signUpWithEmailPassword, loginWithEmailPassword, logout 
+    }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,8 +1,10 @@
 import { Briefcase, FileText, CheckCircle, Clock, Calendar, Video, MapPin, ExternalLink, MessageSquare, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import DashboardLayout from '../../components/DashboardLayout';
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, where, getDoc, doc } from 'firebase/firestore';
+import { collection, query, onSnapshot, where, getDocs, documentId } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { useAuth } from '../../contexts/AuthContext';
+import { CardSkeleton, TableSkeleton } from '../../components/Skeletons';
 
 const navItems = [
   { name: 'Dashboard', href: '/student', icon: Briefcase },
@@ -12,33 +14,48 @@ const navItems = [
 ];
 
 export default function StudentInterviews() {
+  const { user } = useAuth();
   const [interviews, setInterviews] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(5);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    if (!user) return;
 
-    const q = query(collection(db, 'interviews'), where('studentId', '==', auth.currentUser.uid));
+    const q = query(collection(db, 'interviews'), where('studentId', '==', user.uid));
     const unsubscribe = onSnapshot(q, async (snapshot) => {
       try {
-        const interviewsData = await Promise.all(snapshot.docs.map(async (interviewDoc) => {
+        const jobIds = Array.from(new Set(snapshot.docs.map(d => d.data().jobId).filter(Boolean))) as string[];
+        const jobsMap = new Map();
+
+        if (jobIds.length > 0) {
+          const jobChunks = [];
+          for (let i = 0; i < jobIds.length; i += 10) {
+            jobChunks.push(jobIds.slice(i, i + 10));
+          }
+          
+          try {
+            await Promise.all(jobChunks.map(async (chunk) => {
+              const jobsQuery = query(collection(db, 'jobs'), where(documentId(), 'in', chunk));
+              const qs = await getDocs(jobsQuery);
+              qs.forEach(doc => jobsMap.set(doc.id, doc.data()));
+            }));
+          } catch (e) {
+            console.error("Error batch fetching jobs:", e);
+          }
+        }
+
+        const interviewsData = snapshot.docs.map(interviewDoc => {
           const data = interviewDoc.data();
           
           let companyName = 'Unknown Company';
           let roleTitle = 'Unknown Role';
           
-          if (data.jobId) {
-            try {
-              const jobDoc = await getDoc(doc(db, 'jobs', data.jobId));
-              if (jobDoc.exists()) {
-                roleTitle = jobDoc.data().title;
-                companyName = jobDoc.data().company || 'Unknown Company';
-              }
-            } catch (e) {
-              console.error("Error fetching job:", e);
-            }
+          if (data.jobId && jobsMap.has(data.jobId)) {
+            const jobData = jobsMap.get(data.jobId);
+            roleTitle = jobData.title || roleTitle;
+            companyName = jobData.company || companyName;
           }
 
           return {
@@ -56,7 +73,7 @@ export default function StudentInterviews() {
             status: data.status || 'Scheduled',
             feedback: data.feedback || 'Pending'
           };
-        }));
+        });
         
         setInterviews(interviewsData);
       } catch (error) {
@@ -103,7 +120,7 @@ export default function StudentInterviews() {
           
           <div className="grid gap-4">
             {loading ? (
-              <div className="p-8 text-center text-slate-500 bg-white border border-slate-200 rounded-xl">Loading interviews...</div>
+              <CardSkeleton count={2} />
             ) : upcomingInterviews.length === 0 ? (
               <div className="p-8 text-center text-slate-500 bg-white border border-slate-200 rounded-xl">No upcoming interviews scheduled.</div>
             ) : (
@@ -199,7 +216,7 @@ export default function StudentInterviews() {
           </div>
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
             {loading ? (
-              <div className="p-8 text-center text-slate-500">Loading past interviews...</div>
+              <TableSkeleton columns={4} rows={3} />
             ) : currentPastInterviews.length === 0 ? (
               <div className="p-8 text-center text-slate-500">No past interviews found.</div>
             ) : (

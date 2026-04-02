@@ -1,8 +1,10 @@
 import { Briefcase, FileText, CheckCircle, Clock, Search, Filter, Building, MapPin, DollarSign, Calendar, ArrowRight, ChevronRight, XCircle, ChevronLeft } from 'lucide-react';
 import DashboardLayout from '../../components/DashboardLayout';
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, where, getDoc, doc } from 'firebase/firestore';
+import { collection, query, onSnapshot, where, getDoc, doc, updateDoc, documentId, getDocs } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { useAuth } from '../../contexts/AuthContext';
+import { CardSkeleton } from '../../components/Skeletons';
 
 const navItems = [
   { name: 'Dashboard', href: '/student', icon: Briefcase },
@@ -14,12 +16,12 @@ const navItems = [
 const getStatusColor = (status: string) => {
   switch (status) {
     case 'Offered': return 'bg-emerald-100 text-emerald-700 border-emerald-200';
-    case 'interviewing':
     case 'Interview': return 'bg-indigo-100 text-indigo-700 border-indigo-200';
     case 'Assessment': return 'bg-amber-100 text-amber-700 border-amber-200';
-    case 'reviewing':
+    case 'Under Review': return 'bg-purple-100 text-purple-700 border-purple-200';
     case 'Applied': return 'bg-blue-100 text-blue-700 border-blue-200';
     case 'Rejected': return 'bg-red-100 text-red-700 border-red-200';
+    case 'Withdrawn': return 'bg-slate-100 text-slate-500 border-slate-200';
     default: return 'bg-slate-100 text-slate-700 border-slate-200';
   }
 };
@@ -28,10 +30,9 @@ const getProgressBarColor = (status: string) => {
   switch (status) {
     case 'Offered': return 'bg-emerald-500';
     case 'Rejected': return 'bg-red-500';
-    case 'interviewing':
     case 'Interview': return 'bg-indigo-500';
     case 'Assessment': return 'bg-amber-500';
-    case 'reviewing':
+    case 'Under Review': return 'bg-purple-500';
     case 'Applied': return 'bg-blue-500';
     default: return 'bg-slate-500';
   }
@@ -39,18 +40,19 @@ const getProgressBarColor = (status: string) => {
 
 const getProgressValue = (status: string) => {
   switch (status) {
-    case 'Applied':
-    case 'reviewing': return 25;
+    case 'Applied': return 20;
+    case 'Under Review': return 35;
     case 'Assessment': return 50;
-    case 'Interview':
-    case 'interviewing': return 75;
+    case 'Interview': return 75;
     case 'Offered':
     case 'Rejected': return 100;
+    case 'Withdrawn': return 0;
     default: return 0;
   }
 };
 
 export default function StudentApplications() {
+  const { user } = useAuth();
   const [applications, setApplications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -58,12 +60,32 @@ export default function StudentApplications() {
   const [itemsPerPage] = useState(5);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    if (!user) return;
 
-    const q = query(collection(db, 'applications'), where('studentId', '==', auth.currentUser.uid));
+    const q = query(collection(db, 'applications'), where('studentId', '==', user.uid));
     const unsubscribe = onSnapshot(q, async (snapshot) => {
       try {
-        const appsData = await Promise.all(snapshot.docs.map(async (appDoc) => {
+        const jobIds = Array.from(new Set(snapshot.docs.map(d => d.data().jobId).filter(Boolean))) as string[];
+        const jobsMap = new Map();
+
+        if (jobIds.length > 0) {
+          const jobChunks = [];
+          for (let i = 0; i < jobIds.length; i += 10) {
+            jobChunks.push(jobIds.slice(i, i + 10));
+          }
+          
+          try {
+            await Promise.all(jobChunks.map(async (chunk) => {
+              const jobsQuery = query(collection(db, 'jobs'), where(documentId(), 'in', chunk));
+              const qs = await getDocs(jobsQuery);
+              qs.forEach(doc => jobsMap.set(doc.id, doc.data()));
+            }));
+          } catch (e) {
+            console.error("Error batch fetching jobs:", e);
+          }
+        }
+
+        const appsData = snapshot.docs.map(appDoc => {
           const data = appDoc.data();
           
           let roleTitle = 'Unknown Role';
@@ -72,20 +94,13 @@ export default function StudentApplications() {
           let type = 'Full-time';
           let salary = 'Not specified';
           
-          if (data.jobId) {
-            try {
-              const jobDoc = await getDoc(doc(db, 'jobs', data.jobId));
-              if (jobDoc.exists()) {
-                const jobData = jobDoc.data();
-                roleTitle = jobData.title || roleTitle;
-                companyName = jobData.company || companyName;
-                location = jobData.location || location;
-                type = jobData.type || type;
-                salary = jobData.salary || salary;
-              }
-            } catch (e) {
-              console.error("Error fetching job:", e);
-            }
+          if (data.jobId && jobsMap.has(data.jobId)) {
+            const jobData = jobsMap.get(data.jobId);
+            roleTitle = jobData.title || roleTitle;
+            companyName = jobData.company || companyName;
+            location = jobData.location || location;
+            type = jobData.type || type;
+            salary = jobData.salary || salary;
           }
 
           return {
@@ -103,7 +118,7 @@ export default function StudentApplications() {
                       data.status === 'Offered' ? 'Offer Letter Sent' :
                       data.status === 'Rejected' ? 'Position Filled' : 'Pending'
           };
-        }));
+        });
         
         setApplications(appsData);
       } catch (error) {
@@ -135,6 +150,18 @@ export default function StudentApplications() {
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm]);
+
+  const handleWithdraw = async (applicationId: string) => {
+    if (window.confirm('Are you sure you want to withdraw this application? This cannot be undone.')) {
+      try {
+        await updateDoc(doc(db, 'applications', applicationId), {
+          status: 'Withdrawn'
+        });
+      } catch (error) {
+        console.error("Error withdrawing application:", error);
+      }
+    }
+  };
 
   const totalApplied = applications.length;
   const inProgress = applications.filter(a => a.status === 'reviewing' || a.status === 'Applied' || a.status === 'Assessment').length;
@@ -187,7 +214,7 @@ export default function StudentApplications() {
 
       <div className="space-y-4">
         {loading ? (
-          <div className="p-8 text-center text-slate-500">Loading applications...</div>
+          <CardSkeleton count={3} />
         ) : currentApps.length === 0 ? (
           <div className="p-8 text-center text-slate-500">No applications found.</div>
         ) : (
@@ -256,8 +283,11 @@ export default function StudentApplications() {
                   <button className="flex-1 lg:flex-none bg-white border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-indigo-600 px-4 py-2 rounded-lg text-sm font-medium transition-colors text-center">
                     View Details
                   </button>
-                  {app.status !== 'Rejected' && app.status !== 'Offered' && (
-                    <button className="flex-1 lg:flex-none bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors text-center">
+                  {app.status !== 'Rejected' && app.status !== 'Offered' && app.status !== 'Withdrawn' && (
+                    <button 
+                      onClick={() => handleWithdraw(app.id)}
+                      className="flex-1 lg:flex-none bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors text-center"
+                    >
                       Withdraw
                     </button>
                   )}

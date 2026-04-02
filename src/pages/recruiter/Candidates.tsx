@@ -1,8 +1,12 @@
-import { Briefcase, Users, Clock, Search, Filter, MoreVertical, MapPin, Download, CheckCircle, XCircle, Star, Mail, Phone, GraduationCap, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Briefcase, Users, Clock, Search, Filter, MoreVertical, MapPin, Download, CheckCircle, XCircle, Mail, Phone, GraduationCap, ChevronLeft, ChevronRight } from 'lucide-react';
 import DashboardLayout from '../../components/DashboardLayout';
-import { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, getDoc, doc } from 'firebase/firestore';
+import { useState, useEffect, useRef } from 'react';
+import { collection, query, where, onSnapshot, doc, updateDoc, documentId, getDocs } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { useAuth } from '../../contexts/AuthContext';
+import FilterPanel, { ActiveFilters, FilterGroup } from '../../components/FilterPanel';
+import AICandidateScore from '../../components/AICandidateScore';
+import { addNotification } from '../../services/notifications';
 
 const navItems = [
   { name: 'Dashboard', href: '/recruiter', icon: Briefcase },
@@ -16,8 +20,10 @@ const getStatusColor = (status: string) => {
     case 'Offered': return 'bg-emerald-100 text-emerald-700 border-emerald-200';
     case 'Interview': return 'bg-indigo-100 text-indigo-700 border-indigo-200';
     case 'Assessment': return 'bg-amber-100 text-amber-700 border-amber-200';
+    case 'Under Review': return 'bg-purple-100 text-purple-700 border-purple-200';
     case 'Applied': return 'bg-blue-100 text-blue-700 border-blue-200';
     case 'Rejected': return 'bg-red-100 text-red-700 border-red-200';
+    case 'Withdrawn': return 'bg-slate-100 text-slate-500 border-slate-200';
     default: return 'bg-slate-100 text-slate-700 border-slate-200';
   }
 };
@@ -29,62 +35,82 @@ const getScoreColor = (score: number) => {
 };
 
 export default function RecruiterCandidates() {
+  const { user } = useAuth();
   const [candidates, setCandidates] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
+  const [activeFilters, setActiveFilters] = useState<ActiveFilters>({ status: [] });
+
+  // Track inner unsubscribes to prevent memory leak
+  const innerUnsubs = useRef<(() => void)[]>([]);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    if (!user) return;
+
+    // Clean up inner listeners on every outer re-fire
+    const cleanupInner = () => {
+      innerUnsubs.current.forEach(unsub => unsub());
+      innerUnsubs.current = [];
+    };
 
     // First, fetch jobs for this recruiter
-    const jobsQuery = query(collection(db, 'jobs'), where('recruiterId', '==', auth.currentUser.uid));
+    const jobsQuery = query(collection(db, 'jobs'), where('recruiterId', '==', user.uid));
     
     const unsubscribeJobs = onSnapshot(jobsQuery, (jobsSnapshot) => {
+      // Clean up previous inner listeners before setting up new ones
+      cleanupInner();
+
       const jobIds = jobsSnapshot.docs.map(doc => doc.id);
       
+      const jobsMap = new Map();
+      jobsSnapshot.docs.forEach(doc => {
+        jobsMap.set(doc.id, doc.data());
+      });
+
       if (jobIds.length === 0) {
         setCandidates([]);
         setLoading(false);
         return;
       }
 
-      // Then, fetch applications for these jobs
-      // Note: Firestore 'in' queries are limited to 10 items. For a real app with many jobs,
-      // you'd need a different approach, but this works for our seeded data.
+      // Firestore 'in' queries are limited to 10 items, chunk them
       const chunks = [];
       for (let i = 0; i < jobIds.length; i += 10) {
         chunks.push(jobIds.slice(i, i + 10));
       }
 
-      const unsubscribes: any[] = [];
       let allCandidates: any[] = [];
 
       chunks.forEach(chunk => {
         const appsQuery = query(collection(db, 'applications'), where('jobId', 'in', chunk));
         const unsub = onSnapshot(appsQuery, async (appsSnapshot) => {
-          const candidatesPromises = appsSnapshot.docs.map(async (appDoc) => {
-            const appData = appDoc.data();
-            let studentData: any = {};
-            let jobData: any = {};
+          
+          const studentIds = Array.from(new Set(appsSnapshot.docs.map(d => d.data().studentId).filter(Boolean))) as string[];
+          const studentsMap = new Map();
 
-            try {
-              if (appData.studentId) {
-                const studentDocRef = await getDoc(doc(db, 'users', appData.studentId));
-                if (studentDocRef.exists()) {
-                  studentData = studentDocRef.data();
-                }
-              }
-              if (appData.jobId) {
-                const jobDocRef = await getDoc(doc(db, 'jobs', appData.jobId));
-                if (jobDocRef.exists()) {
-                  jobData = jobDocRef.data();
-                }
-              }
-            } catch (error) {
-              console.error("Error fetching related data:", error);
+          if (studentIds.length > 0) {
+            const studentChunks = [];
+            for (let i = 0; i < studentIds.length; i += 10) {
+              studentChunks.push(studentIds.slice(i, i + 10));
             }
+            
+            try {
+              await Promise.all(studentChunks.map(async (sChunk) => {
+                const q = query(collection(db, 'users'), where(documentId(), 'in', sChunk));
+                const qs = await getDocs(q);
+                qs.forEach(doc => studentsMap.set(doc.id, doc.data()));
+              }));
+            } catch (error) {
+              console.error("Error batch fetching students:", error);
+            }
+          }
+
+          const resolvedCandidates = appsSnapshot.docs.map(appDoc => {
+            const appData = appDoc.data();
+            const studentData = studentsMap.get(appData.studentId) || {};
+            const jobData = jobsMap.get(appData.jobId) || {};
 
             return {
               id: appDoc.id,
@@ -93,38 +119,58 @@ export default function RecruiterCandidates() {
               role: jobData.title || 'Unknown Role',
               experience: studentData.experience?.length > 0 ? `${studentData.experience.length} Exp` : 'Fresher',
               education: studentData.education?.[0]?.degree || studentData.dept || 'B.Tech',
-              matchScore: appData.matchScore || 85, // Use real match score if available, else default
+              matchScore: appData.matchScore || 85,
               status: appData.status || 'Applied',
-              skills: studentData.skills?.slice(0, 3) || ['React', 'JavaScript', 'HTML'],
+              skills: studentData.skills?.slice(0, 3) || [],
               appliedDate: new Date(appData.appliedAt || Date.now()).toLocaleDateString(),
-              phone: studentData.phone || '+91 0000000000',
-              resumeUrl: appData.resumeUrl
+              phone: studentData.phone || '',
+              resumeUrl: appData.resumeUrl,
+              studentId: appData.studentId
             };
           });
 
-          const resolvedCandidates = await Promise.all(candidatesPromises);
-          
           // Merge with existing candidates from other chunks
           allCandidates = [...allCandidates.filter(c => !resolvedCandidates.find(rc => rc.id === c.id)), ...resolvedCandidates];
           setCandidates(allCandidates);
           setLoading(false);
         });
-        unsubscribes.push(unsub);
+        innerUnsubs.current.push(unsub);
       });
-
-      return () => {
-        unsubscribes.forEach(unsub => unsub());
-      };
     });
 
-    return () => unsubscribeJobs();
+    return () => {
+      cleanupInner();
+      unsubscribeJobs();
+    };
   }, []);
 
-  const filteredCandidates = candidates.filter(candidate => 
-    candidate.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    candidate.role.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    candidate.skills.some((skill: string) => skill.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  // Build filter groups
+  const filterGroups: FilterGroup[] = [
+    {
+      id: 'status',
+      label: 'Application Status',
+      options: [
+        { value: 'Applied', label: 'Applied', count: candidates.filter(c => c.status === 'Applied').length },
+        { value: 'Under Review', label: 'Under Review', count: candidates.filter(c => c.status === 'Under Review').length },
+        { value: 'Assessment', label: 'Assessment', count: candidates.filter(c => c.status === 'Assessment').length },
+        { value: 'Interview', label: 'Interview', count: candidates.filter(c => c.status === 'Interview').length },
+        { value: 'Offered', label: 'Offered', count: candidates.filter(c => c.status === 'Offered').length },
+        { value: 'Rejected', label: 'Rejected', count: candidates.filter(c => c.status === 'Rejected').length },
+        { value: 'Withdrawn', label: 'Withdrawn', count: candidates.filter(c => c.status === 'Withdrawn').length },
+      ].filter(o => o.count > 0),
+    },
+  ];
+
+  const filteredCandidates = candidates.filter(candidate => {
+    const matchesSearch = !searchTerm ||
+      candidate.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      candidate.role.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      candidate.skills.some((skill: string) => skill.toLowerCase().includes(searchTerm.toLowerCase()));
+
+    const matchesStatus = activeFilters.status.length === 0 || activeFilters.status.includes(candidate.status);
+
+    return matchesSearch && matchesStatus;
+  });
 
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
@@ -138,6 +184,25 @@ export default function RecruiterCandidates() {
     setCurrentPage(1);
   }, [searchTerm]);
 
+  const updateCandidateStatus = async (applicationId: string, newStatus: string) => {
+    try {
+      await updateDoc(doc(db, 'applications', applicationId), { status: newStatus });
+      
+      const candidate = candidates.find(c => c.id === applicationId);
+      if (candidate && candidate.studentId) {
+        await addNotification({
+          userId: candidate.studentId,
+          title: 'Application Status Updated',
+          message: `Your application for ${candidate.role} is now marked as ${newStatus}.`,
+          type: 'application_status',
+          link: '/student/applications'
+        });
+      }
+    } catch (error) {
+      console.error('Error updating status:', error);
+    }
+  };
+
   return (
     <DashboardLayout role="Recruiter" navItems={navItems}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
@@ -146,10 +211,13 @@ export default function RecruiterCandidates() {
           <p className="text-slate-500 text-sm mt-1">Review applications, track candidate progress, and manage hiring stages.</p>
         </div>
         <div className="flex gap-3">
-          <button className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors shadow-sm">
-            <Filter className="w-4 h-4" />
-            Filter
-          </button>
+          <FilterPanel
+            groups={filterGroups}
+            activeFilters={activeFilters}
+            onFilterChange={(f) => { setActiveFilters(f); setCurrentPage(1); }}
+            resultCount={filteredCandidates.length}
+            totalCount={candidates.length}
+          />
           <button className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors shadow-sm">
             <Download className="w-4 h-4" />
             Export Data
@@ -158,22 +226,42 @@ export default function RecruiterCandidates() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        {[
-          { label: 'Total Candidates', count: candidates.length, color: 'blue' },
-          { label: 'In Review', count: candidates.filter(c => c.status === 'Assessment' || c.status === 'reviewing').length, color: 'amber' },
-          { label: 'Interviews Scheduled', count: candidates.filter(c => c.status === 'Interview' || c.status === 'interviewing').length, color: 'indigo' },
-          { label: 'Offers Extended', count: candidates.filter(c => c.status === 'Offered').length, color: 'emerald' },
-        ].map((stat, i) => (
-          <div key={i} className={`bg-${stat.color}-50 border border-${stat.color}-100 rounded-xl p-4 flex items-center justify-between`}>
-            <div>
-              <p className={`text-sm font-medium text-${stat.color}-600 mb-1`}>{stat.label}</p>
-              <h4 className={`text-2xl font-bold text-${stat.color}-900`}>{stat.count}</h4>
-            </div>
-            <div className={`p-3 bg-white rounded-lg shadow-sm text-${stat.color}-500`}>
-              <Users className="w-5 h-5" />
-            </div>
+        <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-blue-600 mb-1">Total Candidates</p>
+            <h4 className="text-2xl font-bold text-blue-900">{candidates.length}</h4>
           </div>
-        ))}
+          <div className="p-3 bg-white rounded-lg shadow-sm text-blue-500">
+            <Users className="w-5 h-5" />
+          </div>
+        </div>
+        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-amber-600 mb-1">In Review</p>
+            <h4 className="text-2xl font-bold text-amber-900">{candidates.filter(c => c.status === 'Under Review' || c.status === 'Assessment').length}</h4>
+          </div>
+          <div className="p-3 bg-white rounded-lg shadow-sm text-amber-500">
+            <Users className="w-5 h-5" />
+          </div>
+        </div>
+        <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-indigo-600 mb-1">Interviews Scheduled</p>
+            <h4 className="text-2xl font-bold text-indigo-900">{candidates.filter(c => c.status === 'Interview').length}</h4>
+          </div>
+          <div className="p-3 bg-white rounded-lg shadow-sm text-indigo-500">
+            <Users className="w-5 h-5" />
+          </div>
+        </div>
+        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-emerald-600 mb-1">Offers Extended</p>
+            <h4 className="text-2xl font-bold text-emerald-900">{candidates.filter(c => c.status === 'Offered').length}</h4>
+          </div>
+          <div className="p-3 bg-white rounded-lg shadow-sm text-emerald-500">
+            <Users className="w-5 h-5" />
+          </div>
+        </div>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -244,10 +332,11 @@ export default function RecruiterCandidates() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-col gap-2">
-                        <div className="flex items-center gap-2">
-                          <Star className={`w-4 h-4 fill-current ${getScoreColor(candidate.matchScore)}`} />
-                          <span className={`font-bold text-sm ${getScoreColor(candidate.matchScore)}`}>{candidate.matchScore}% Match</span>
-                        </div>
+                        <AICandidateScore
+                          candidateName={candidate.name}
+                          candidateSkills={candidate.skills}
+                          jobTitle={candidate.role}
+                        />
                         <div className="flex flex-wrap gap-1 max-w-[180px]">
                           {candidate.skills.map((skill: string) => (
                             <span key={skill} className="text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200">
@@ -263,15 +352,37 @@ export default function RecruiterCandidates() {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-2 relative">
                         {candidate.resumeUrl && (
                           <a href={candidate.resumeUrl} target="_blank" rel="noreferrer" className="text-indigo-600 hover:text-indigo-700 font-medium text-sm px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition-colors">
                             View Resume
                           </a>
                         )}
-                        <button className="text-slate-400 hover:text-indigo-600 p-2 rounded-lg hover:bg-indigo-50 transition-colors">
-                          <MoreVertical className="w-5 h-5" />
-                        </button>
+                        <div className="group/menu relative inline-block text-left">
+                          <button className="text-slate-400 hover:text-indigo-600 p-2 rounded-lg hover:bg-indigo-50 transition-colors focus:outline-none">
+                            <MoreVertical className="w-5 h-5" />
+                          </button>
+                          <div className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 divide-y divide-gray-100 opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all z-10 overflow-hidden">
+                            <div className="py-1 bg-slate-50 border-b border-slate-100 px-3">
+                              <span className="text-xs font-bold text-slate-500 uppercase">Change Status</span>
+                            </div>
+                            <div className="py-1">
+                              {['Under Review', 'Assessment', 'Interview', 'Offered', 'Rejected'].map((statusOption) => (
+                                <button
+                                  key={statusOption}
+                                  onClick={() => updateCandidateStatus(candidate.id, statusOption)}
+                                  className={`block px-4 py-2 text-sm w-full text-left font-medium transition-colors ${
+                                    candidate.status === statusOption 
+                                      ? 'bg-indigo-50 text-indigo-700' 
+                                      : 'text-slate-700 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  Mark as {statusOption}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </td>
                   </tr>

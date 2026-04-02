@@ -1,8 +1,10 @@
 import { Briefcase, Users, Clock, Calendar, Video, MapPin, Plus, Search, Filter, MessageSquare, CheckCircle, XCircle, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import DashboardLayout from '../../components/DashboardLayout';
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { collection, query, onSnapshot, where, doc, updateDoc, getDocs, documentId } from 'firebase/firestore';
 import { db, auth } from '../../firebase';
+import { useAuth } from '../../contexts/AuthContext';
+import ScheduleInterviewModal from '../../components/recruiter/ScheduleInterviewModal';
 
 const navItems = [
   { name: 'Dashboard', href: '/recruiter', icon: Briefcase },
@@ -12,46 +14,61 @@ const navItems = [
 ];
 
 export default function RecruiterInterviews() {
+  const { user } = useAuth();
   const [interviews, setInterviews] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    if (!user) return;
 
-    const q = query(collection(db, 'interviews'), where('recruiterId', '==', auth.currentUser.uid));
+    const q = query(collection(db, 'interviews'), where('recruiterId', '==', user.uid));
     
     const unsubscribe = onSnapshot(q, async (snapshot) => {
       try {
-        const interviewsData = await Promise.all(snapshot.docs.map(async (interviewDoc) => {
+        const studentIds = Array.from(new Set(snapshot.docs.map(d => d.data().studentId).filter(Boolean))) as string[];
+        const jobIds = Array.from(new Set(snapshot.docs.map(d => d.data().jobId).filter(Boolean))) as string[];
+        
+        const studentsMap = new Map();
+        const jobsMap = new Map();
+
+        const fetchChunks = async (ids: string[], collectionName: string, mapToPopulate: Map<string, any>) => {
+          if (ids.length === 0) return;
+          const chunks = [];
+          for (let i = 0; i < ids.length; i += 10) {
+            chunks.push(ids.slice(i, i + 10));
+          }
+          await Promise.all(chunks.map(async chunk => {
+            const q = query(collection(db, collectionName), where(documentId(), 'in', chunk));
+            const qs = await getDocs(q);
+            qs.forEach(doc => mapToPopulate.set(doc.id, doc.data()));
+          }));
+        };
+
+        try {
+          await Promise.all([
+            fetchChunks(studentIds, 'users', studentsMap),
+            fetchChunks(jobIds, 'jobs', jobsMap)
+          ]);
+        } catch (e) {
+          console.error("Error batch fetching related data:", e);
+        }
+
+        const interviewsData = snapshot.docs.map(interviewDoc => {
           const data = interviewDoc.data();
           
-          // Fetch student details
           let candidateName = 'Unknown Candidate';
-          if (data.studentId) {
-            try {
-              const studentDoc = await getDoc(doc(db, 'users', data.studentId));
-              if (studentDoc.exists()) {
-                candidateName = studentDoc.data().name || studentDoc.data().displayName;
-              }
-            } catch (e) {
-              console.error("Error fetching student:", e);
-            }
+          if (data.studentId && studentsMap.has(data.studentId)) {
+            const sData = studentsMap.get(data.studentId);
+            candidateName = sData.name || sData.displayName || candidateName;
           }
 
-          // Fetch job details
           let role = 'Unknown Role';
-          if (data.jobId) {
-            try {
-              const jobDoc = await getDoc(doc(db, 'jobs', data.jobId));
-              if (jobDoc.exists()) {
-                role = jobDoc.data().title;
-              }
-            } catch (e) {
-              console.error("Error fetching job:", e);
-            }
+          if (data.jobId && jobsMap.has(data.jobId)) {
+            role = jobsMap.get(data.jobId).title || role;
           }
 
           return {
@@ -68,7 +85,7 @@ export default function RecruiterInterviews() {
             feedback: data.feedback ? 'Submitted' : 'Pending',
             interviewer: data.interviewerName || 'Recruiter'
           };
-        }));
+        });
         
         setInterviews(interviewsData);
       } catch (error) {
@@ -102,6 +119,23 @@ export default function RecruiterInterviews() {
     setCurrentPage(1);
   }, [searchTerm]);
 
+  const markAsCompleted = async (interviewId: string) => {
+    try {
+      await updateDoc(doc(db, 'interviews', interviewId), { status: 'Completed' });
+    } catch (error) {
+      console.error('Error marking completed:', error);
+    }
+  };
+
+  const submitFeedback = async (interviewId: string) => {
+    try {
+      // For now, simply toggle the feedback state to true/Submitted
+      await updateDoc(doc(db, 'interviews', interviewId), { feedback: true });
+    } catch (error) {
+      console.error('Error submitting feedback:', error);
+    }
+  };
+
   return (
     <DashboardLayout role="Recruiter" navItems={navItems}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
@@ -114,7 +148,10 @@ export default function RecruiterInterviews() {
             <Filter className="w-4 h-4" />
             Filter
           </button>
-          <button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors shadow-sm">
+          <button 
+            onClick={() => setIsAddModalOpen(true)}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors shadow-sm"
+          >
             <Plus className="w-4 h-4" />
             Schedule Interview
           </button>
@@ -246,13 +283,19 @@ export default function RecruiterInterviews() {
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
                         {interview.status !== 'Completed' && (
-                          <button className="text-indigo-600 hover:text-indigo-700 font-medium text-sm px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition-colors">
-                            {interview.mode === 'Virtual' ? 'Join' : 'Details'}
+                          <button 
+                            onClick={() => markAsCompleted(interview.id)}
+                            className="text-indigo-600 hover:text-indigo-700 font-medium text-sm px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition-colors border border-indigo-200"
+                          >
+                            Mark Completed
                           </button>
                         )}
                         {interview.status === 'Completed' && interview.feedback === 'Pending' && (
-                          <button className="text-amber-600 hover:text-amber-700 font-medium text-sm px-3 py-1.5 rounded-lg hover:bg-amber-50 transition-colors">
-                            Add Feedback
+                          <button 
+                            onClick={() => submitFeedback(interview.id)}
+                            className="text-amber-600 hover:text-amber-700 font-medium text-sm px-3 py-1.5 rounded-lg hover:bg-amber-50 transition-colors border border-amber-200"
+                          >
+                            Submit Feedback
                           </button>
                         )}
                       </div>
@@ -300,6 +343,11 @@ export default function RecruiterInterviews() {
           </div>
         )}
       </div>
+
+      <ScheduleInterviewModal 
+        isOpen={isAddModalOpen} 
+        onClose={() => setIsAddModalOpen(false)} 
+      />
     </DashboardLayout>
   );
 }

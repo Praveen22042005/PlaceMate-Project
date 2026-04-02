@@ -3,6 +3,8 @@ import DashboardLayout from '../../components/DashboardLayout';
 import { useState, useEffect } from 'react';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
+import { useFirestoreCollection, QueryOption } from '../../hooks/useFirestore';
+import { TableSkeleton } from '../../components/Skeletons';
 
 const navItems = [
   { name: 'Dashboard', href: '/admin', icon: Briefcase },
@@ -13,29 +15,12 @@ const navItems = [
 ];
 
 export default function AdminStudents() {
-  const [students, setStudents] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
-
-  useEffect(() => {
-    const q = query(collection(db, 'users'), where('role', '==', 'student'));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const studentsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setStudents(studentsData);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching students:', error);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
+  
+  const studentQuery: QueryOption[] = [{ field: 'role', op: '==', value: 'student' }];
+  const { data: students, loading } = useFirestoreCollection('users', studentQuery);
 
   const filteredStudents = students.filter(student => 
     student.displayName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -113,6 +98,11 @@ export default function AdminStudents() {
         </div>
         
         <div className="overflow-x-auto">
+          {loading ? (
+             <TableSkeleton columns={5} rows={5} />
+          ) : paginatedStudents.length === 0 ? (
+             <div className="p-8 text-center text-slate-500">No students found.</div>
+          ) : (
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-white border-b border-slate-200">
@@ -124,19 +114,7 @@ export default function AdminStudents() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                    Loading students...
-                  </td>
-                </tr>
-              ) : paginatedStudents.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                    No students found.
-                  </td>
-                </tr>
-              ) : paginatedStudents.map((student) => (
+              {paginatedStudents.map((student) => (
                 <tr key={student.id} className="hover:bg-slate-50/50 transition-colors group">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
@@ -201,6 +179,7 @@ export default function AdminStudents() {
               ))}
             </tbody>
           </table>
+          )}
         </div>
         
         {totalPages > 1 && (
